@@ -9,6 +9,7 @@ import copy
 import random
 import os
 import argparse
+import pandas as pd
 EPS = 1e-15
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -18,11 +19,13 @@ nnloss = nn.NLLLoss()
 def main(args):
     torch.manual_seed(args.seed)
     if not os.path.exists(args.res_dir):
-        os.mkdir(args.res_dir)
+        os.makedirs(args.res_dir)
+    if not os.path.exists(args.id_dir):
+        os.makedirs(args.id_dir)
     if not os.path.exists(args.model_dir):
-        os.mkdir(args.model_dir)
+        os.makedirs(args.model_dir)
     if not os.path.exists(os.path.join(args.model_dir,args.site)):
-        os.mkdir(os.path.join(args.model_dir,args.site))
+        os.makedirs(os.path.join(args.model_dir,args.site))
     save_model_dir = os.path.join(args.model_dir,args.site)
 
     data = dd.io.load(os.path.join(args.vec_dir,args.site+'_correlation_matrix.h5'))
@@ -76,7 +79,7 @@ def main(args):
         tr = id['0']+id['1']+id['2']+id['3']
         te = id['4']
 
-
+    # 构建的训练和测试数据
     x_train = x[tr]
     y_train = y[tr]
     x_test = x[te]
@@ -180,7 +183,7 @@ if __name__ == '__main__':
     parser.add_argument('-bs', '--batch_size', type=int, default=200, help='training batch size')
     parser.add_argument('--id_dir', type=str, default='./idx')
     parser.add_argument('--res_dir', type=str, default='./result/single_overlap')
-    parser.add_argument('--vec_dir', type=str, default='./data/HO_vector_overlap')
+    parser.add_argument('--vec_dir', type=str, default='./data')
     parser.add_argument('--model_dir', type=str, default='./model/single_overlap')
 
 

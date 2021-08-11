@@ -20,6 +20,8 @@ def main(args):
         os.mkdir(args.res_dir)
     if not os.path.exists(args.model_dir):
         os.mkdir(args.model_dir)
+    if not os.path.exists(args.id_dir):
+        os.mkdir(args.id_dir)
 
     data1 = dd.io.load(os.path.join(args.vec_dir,'NYU_correlation_matrix.h5'))
     data2 = dd.io.load(os.path.join(args.vec_dir,'UM_correlation_matrix.h5'))
@@ -265,7 +267,7 @@ if __name__ == '__main__':
     parser.add_argument('--sepnorm', type=bool, default=True, help='normalization method')
     parser.add_argument('--id_dir', type=str, default='./idx')
     parser.add_argument('--res_dir', type=str, default='./result/mix_overlap')
-    parser.add_argument('--vec_dir', type=str, default='./data/HO_vector_overlap')
+    parser.add_argument('--vec_dir', type=str, default='./data')
     parser.add_argument('--model_dir', type=str, default='./model/mix_overlap')
 
     args = parser.parse_args()

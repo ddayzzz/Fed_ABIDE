@@ -76,3 +76,16 @@ class MoE(nn.Module):
         a = F.sigmoid(a)
         res = yl*a+yg*(1-a)
         return res, a
+
+class ClassifierLogits(nn.Module):
+    def __init__(self, dim_in, dim_hidden, dim_out):
+        super(ClassifierLogits, self).__init__()
+        self.encoder = Encoder(dim_in, dim_hidden)
+        self.dropout = nn.Dropout()
+        self.fc = nn.Linear(dim_hidden, dim_out)
+
+    def forward(self, x):
+        x = self.encoder(x)
+        x = self.dropout(x)
+        x = self.fc(x)
+        return x

@@ -17,16 +17,20 @@ def create_vector(site_folder):
     with open(fold + '/abide_preprocessed.csv', newline='') as csvfile:
         reader = csv.reader(csvfile, delimiter=' ', quotechar='|')
         for i in reader:
+            # i[0] 是一行，通过,分割
             if list(i[0].split(','))[5] in ['UM_1', 'NYU', 'USM', 'UCLA_1']:
                 name, lab = list(i[0].split(','))[6:8]
                 lab = int(lab) % 2
                 rows[name] = lab
-    for filename in file:
+    for filename in file:  # 保存的文件
         tmp = dd.io.load(fold + "//{}//{}".format(site, filename))
+        # 加载 ROI 的文件，返回上三角的矩阵然后扁平化
         tri = np.triu(tmp, 1).reshape(-1)
+        # 去掉对角线？
         tri = tri[tri != 0]
         tri[tri < 0] = 0
         data.append(tri)
+        # 这个难道是标签？似乎是更具 label 确定的 num是文件名分割的阈值
         label.append(int(rows[filename[:num]]) % 2)
         id.append(filename)
     data = np.array(data)

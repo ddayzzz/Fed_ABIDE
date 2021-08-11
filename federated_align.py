@@ -280,7 +280,7 @@ def main(args):
                     loss.backward(retain_graph=True)
                     optimizers[i].step()
 
-                fs.append(models[i].encoder(a))
+                fs.append(models[i].encoder(a))  # Gs(x^s)
 
             #optimize alignment
 
@@ -288,7 +288,7 @@ def main(args):
             noises = []
             for i in range(4):
                 nn =tdist.Normal(torch.tensor([0.0]), 0.001 * torch.std(fs[i].detach().cpu()))
-                noises.append(nn.sample(fs[i].size()).squeeze().to(device))
+                noises.append(nn.sample(fs[i].size()).squeeze().to(device))  # N\cdot Gt(x^t), 在下面的循环中使用 j
 
 
             for i in range(4):

@@ -6,7 +6,7 @@ Our manuscript is available on arxiv https://arxiv.org/pdf/2001.05647.pdf and pu
 - Pytorch 1.1.0
 - tensorboardX
 - nilearn
-- deepdish
+- deepdish (pandas 需要 pandas>= 1.1.0,<1.2 [https://github.com/ContextLab/supereeg/issues/208](https://github.com/ContextLab/supereeg/issues/208))
 - numpy
 
 ## Data
@@ -15,6 +15,7 @@ Our manuscript is available on arxiv https://arxiv.org/pdf/2001.05647.pdf and pu
 sh run.sh
 ```
 
+预处理之后将复制的
 ## How to run ?
 Here we show a few examples using different strategies listed in the paper. Please check the meaning of configurations in each script.
 ### Single 

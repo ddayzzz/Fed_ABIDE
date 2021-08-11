@@ -221,7 +221,11 @@ def main(args):
         for t in range(args.nsteps):
             for i in range(4):
                 optimizers[i].zero_grad()
-                a, b= next(data_inters[i])
+                try:
+                    a, b = next(data_inters[i])
+                except StopIteration:
+                    data_inters[i] = iter(train_loaders[i])
+                    a, b = next(data_inters[i])
                 num_data[i] += b.size(0)
                 a = a.to(device)
                 b = b.to(device)
@@ -239,14 +243,21 @@ def main(args):
                         else:
                             temp = torch.zeros_like(model.state_dict()[key])
                             # add noise
-                            for s in range(4):
-                                if args.type == 'G':
-                                    nn = tdist.Normal(torch.tensor([0.0]), args.noise*torch.std(models[s].state_dict()[key].detach().cpu()))
-                                else:
-                                    nn = tdist.Laplace(torch.tensor([0.0]), args.noise*torch.std(models[s].state_dict()[key].detach().cpu()))
-                                noise = nn.sample(models[s].state_dict()[key].size()).squeeze()
-                                noise = noise.to(device)
-                                temp += w[s]*(models[s].state_dict()[key]+noise)
+                            if args.noise > 0:
+                                for s in range(4):
+                                    if args.type == 'G':
+                                        nn = tdist.Normal(torch.tensor([0.0]), args.noise * torch.std(
+                                            models[s].state_dict()[key].detach().cpu()))
+                                    else:
+                                        nn = tdist.Laplace(torch.tensor([0.0]), args.noise * torch.std(
+                                            models[s].state_dict()[key].detach().cpu()))
+                                    noise = nn.sample(models[s].state_dict()[key].size()).squeeze()
+                                    noise = noise.to(device)
+                                    temp += w[s] * (models[s].state_dict()[key] + noise)
+                            else:
+                                # 不使用 noise
+                                for s in range(4):
+                                    temp += w[s] * models[s].state_dict()[key]
                             # update global model
                             model.state_dict()[key].data.copy_(temp)
                             # updata local model
@@ -355,7 +366,7 @@ if __name__ == '__main__':
     parser.add_argument('--sepnorm', type=bool, default=True, help='normalization method')
     parser.add_argument('--id_dir', type=str, default='./idx')
     parser.add_argument('--res_dir', type=str, default='./result/fed_overlap')
-    parser.add_argument('--vec_dir', type=str, default='./data/HO_vector_overlap')
+    parser.add_argument('--vec_dir', type=str, default='./data')
     parser.add_argument('--model_dir', type=str, default='./model/fed_overlap')
 
     args = parser.parse_args()

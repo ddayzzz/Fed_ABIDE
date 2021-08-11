@@ -8,3 +8,8 @@ do
 done
 
 rm -r Outputs
+
+python download_abide_preproc.py -d rois_ho -p cpac -s filt_noglobal -t "$site" -o .
+mkdir "$site"
+mkdir "${site}_correlation_matrix"
+mv Outputs/cpac/filt_noglobal/rois_ho/$site* $site/
