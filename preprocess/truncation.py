@@ -4,7 +4,7 @@ import multiprocessing
 import numpy as np
 import deepdish as dd
 from nilearn.connectome import ConnectivityMeasure
-from nilearn import plotting
+# from nilearn import plotting
 
 
 def make_correlation_matrix(line, site, filename):
@@ -22,7 +22,6 @@ def make_correlation_matrix(line, site, filename):
         correlation_matrix = correlation_measure.fit_transform([time_series[j]])[0]
         fisher = np.arctanh(correlation_matrix)
         np.fill_diagonal(fisher, 0)
-        os.makedirs(folder + '/{}_correlation_matrix'.format(site), exist_ok=True)
         dd.io.save(folder + '/{}_correlation_matrix//{}_{}.h5'.format(site, filename, j), fisher)
 
         # # check whether there are lines all 0 in this subject

@@ -43,6 +43,7 @@ def create_vector(site_folder):
 np.random.seed(5)
 fold = os.getcwd()
 cores = 4 if multiprocessing.cpu_count() >= 4 else multiprocessing.cpu_count()
+# cores = 1
 pool = multiprocessing.Pool(cores)
 pool.map(create_vector, param.SITE_FOLDER)
 

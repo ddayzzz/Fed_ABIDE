@@ -208,7 +208,7 @@ def main(args):
     optimizers_local = [optimizer_local1, optimizer_local2, optimizer_local3, optimizer_local4]
 
     nnloss = nn.NLLLoss()  # 输入的数据集经过了 log_softmax
-    klloss = nn.KLDivLoss(reduction='mean')
+    klloss = nn.KLDivLoss(reduction='batchmean')  # 在 类别的 axis 平均之后再在batch的维度上平均
     sites = ['NYU', 'UM', 'USM', 'UCLA']
     def train(epoch):
         pace = args.pace
@@ -238,7 +238,7 @@ def main(args):
             loss_lc[i] = 0
             num_data[i] = 0
             loss_kl[i] = 0
-        count = 0
+        total_step = 0 # 为每个机构保存对应的计算使用了多少的 step，一旦满足条件，将把本地模型同步
         for t in range(args.nsteps):
             for i in range(4):
                 # 清空梯度信息
@@ -263,10 +263,7 @@ def main(args):
                         client_j_dis = model_backups[j](a)
                         dists.append(client_j_dis)
                 # 计算平均的 logits
-                dist_avg = torch.zeros_like(dists[-1])
-                for dist in dists:
-                    dist_avg += dist
-                dist_avg /= len(dists)
+                dist_avg = sum(dists) / len(dists)
                 # 计算两个损失函数
                 log_soft_out = F.log_softmax(models_local[i](a), dim=1)
                 cls_loss = nnloss(log_soft_out, b)
@@ -283,11 +280,14 @@ def main(args):
                 loss_all[i] += total_loss.item() * num_batch
                 # 这个是更新的客户端本地的参数
                 optimizers_local[i].step()
-            # 所有的机构训练完毕
-            for bak, curr in zip(model_backups, models_local):
-                bak.load_state_dict(curr.state_dict())
 
-            count += 1
+            total_step += 1
+            if total_step % pace == 0 or t == args.nsteps - 1:
+                print("Sync local model")
+                # 如果是最后一个 step 或者是
+                # 同步本地模型上去
+                for bak, curr in zip(model_backups, models_local):
+                    bak.load_state_dict(curr.state_dict())
 
             # 在内部循环中已经默认使用了对方的参数
             # if count % pace == 0 or t == args.nsteps-1:
@@ -444,15 +444,15 @@ if __name__ == '__main__':
     # specify for dataset site
     parser.add_argument('--split', type=int, default=0, help='select 0-4 fold')
     # do not need to change
-    parser.add_argument('--pace', type=int, default=20, help='communication pace')
+    parser.add_argument('--pace', type=int, default=5, help='communication pace')
     parser.add_argument('--noise', type=float, default=0.01, help='noise level')
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--lr1', type=float, default=1e-5)
-    parser.add_argument('--lr2', type=float, default=1e-5)
-    parser.add_argument('--lr3', type=float, default=1e-5)
-    parser.add_argument('--lr4', type=float, default=1e-5)
-    parser.add_argument('--llr', type=float, default=1e-5, help='local model learning rate')
+    parser.add_argument('--lr1', type=float, default=3e-5)
+    parser.add_argument('--lr2', type=float, default=3e-5)
+    parser.add_argument('--lr3', type=float, default=3e-5)
+    parser.add_argument('--lr4', type=float, default=3e-5)
+    parser.add_argument('--llr', type=float, default=3e-5, help='local model learning rate')
     parser.add_argument('--clip', type=float, default=2.0, help='gradient clip')
     parser.add_argument('--dim', type=int, default=8,help='hidden dim of MLP')
     parser.add_argument('--feddim', type=int, default=16, help='hidden dim of FedMLP')

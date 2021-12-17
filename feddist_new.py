@@ -1,42 +1,60 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader, ConcatDataset
+import torch.nn.functional as F
 import time
 import deepdish as dd
-from networks import Classifier, Discriminator
+from networks import MLP
 import torch.distributions as tdist
 import os
 import argparse
 import numpy as np
 import copy
 import pandas as pd
-from tensorboardX import SummaryWriter
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 EPS = 1e-15
-site = ['NYU','UM','USM','UCLA']
+
+class KLDivLoss1(nn.Module):
+
+    def __init__(self):
+        super(KLDivLoss1, self).__init__()
+
+    def forward(self, s, t, label):
+        # ts 是teacher模型的输出，直接进行加权聚合似乎不太行
+        assert t.size(1) == 4, "希望的shape为 [B,N_TEACHERS,10]"
+        max_p, max_p_class = t.max(2)  # [B,#num_of_teacher]
+        consensus_knowledge = torch.zeros(t.size(0), t.size(2), device=device)  # [B,10]
+        for batch_idx, (p, p_class) in enumerate(zip(max_p, max_p_class)):
+            for source_idx, source_class in enumerate(p_class):
+                # p[source_idx] 对应的当前batch上的类标签 source_class 上最大的值
+                # source_class 对应的当前batch上的类标签的 index
+                consensus_knowledge[batch_idx, source_class] += p[source_idx]
+        return F.kl_div(consensus_knowledge, s, reduction='batchmean', log_target=True)
+
 def main(args):
     torch.manual_seed(args.seed)
     if not os.path.exists(args.res_dir):
-        os.mkdir(args.res_dir)
-    if not os.path.exists(args.model_dir):
-        os.mkdir(args.model_dir)
+        os.makedirs(args.res_dir, exist_ok=True)
+    if not os.path.exists(os.path.join(args.res_dir,args.type+str(args.noise))):
+        os.makedirs(os.path.join(args.res_dir,args.type+str(args.noise)), exist_ok=True)
+    if not os.path.exists(os.path.join(args.res_dir,args.type+str(args.noise),str(args.pace))):
+        os.makedirs(os.path.join(args.res_dir,args.type+str(args.noise),str(args.pace)), exist_ok=True)
 
-    log_dir = os.path.join('./log', 'Align_' + str(args.split))
-    if not os.path.exists(log_dir):
-        os.mkdir(log_dir)
-    writer = SummaryWriter(log_dir)
+    if not os.path.exists(args.model_dir):
+        os.makedirs(args.model_dir, exist_ok=True)
+
     logdir = f"{args.log_dir}/split_{args.split}"
     if not os.path.exists(logdir):
         os.makedirs(logdir, exist_ok=True)
     test_df = pd.DataFrame(columns=['rnd', 'dataset', 'loss', 'accuracy'])
+    res_dir = os.path.join(args.res_dir,args.type+str(args.noise),str(args.pace))
 
     data1 = dd.io.load(os.path.join(args.vec_dir,'NYU_correlation_matrix.h5'))
     data2 = dd.io.load(os.path.join(args.vec_dir,'UM_correlation_matrix.h5'))
     data3 = dd.io.load(os.path.join(args.vec_dir,'USM_correlation_matrix.h5'))
     data4 = dd.io.load(os.path.join(args.vec_dir,'UCLA_correlation_matrix.h5'))
-
 
     x1 = torch.from_numpy(data1['data']).float()
     y1 = torch.from_numpy(data1['label']).long()
@@ -163,8 +181,8 @@ def main(args):
     train_loader3 = DataLoader(train3, batch_size=len(train3)//args.nsteps, shuffle=True)
     train4 = TensorDataset(x4_train, y4_train)
     train_loader4 = DataLoader(train4, batch_size=len(train4)//args.nsteps, shuffle=True)
-    train_loaders = [train_loader1, train_loader2, train_loader3, train_loader4]
-    data_inters = [iter(train_loader1),iter(train_loader2),iter(train_loader3),iter(train_loader4)]
+    train_all=ConcatDataset([train1,train2,train3,train4])
+    train_loader = DataLoader(train_all, batch_size=500, shuffle= False)
 
     test1 = TensorDataset(x1_test, y1_test)
     test2 = TensorDataset(x2_test, y2_test)
@@ -175,51 +193,35 @@ def main(args):
     test_loader3 = DataLoader(test3, batch_size=args.test_batch_size3, shuffle=False)
     test_loader4 = DataLoader(test4, batch_size=args.test_batch_size4, shuffle=False)
     tbs= [args.test_batch_size1, args.test_batch_size2, args.test_batch_size3, args.test_batch_size4]
-    test_loaders = [test_loader1,test_loader2,test_loader3,test_loader4]
 
 
-    # federated setup
-    model1 = Classifier(6105,args.dim,2).to(device)
-    model2 = Classifier(6105,args.dim,2).to(device)
-    model3 = Classifier(6105,args.dim,2).to(device)
-    model4 = Classifier(6105,args.dim,2).to(device)
+
+    model1 = MLP(6105,args.dim,2, act=None).to(device)
+    model2 = MLP(6105,args.dim,2, act=None).to(device)
+    model3 = MLP(6105,args.dim,2, act=None).to(device)
+    model4 = MLP(6105,args.dim,2, act=None).to(device)
+    optimizer1 = optim.Adam(model1.parameters(), lr=args.lr1, weight_decay=5e-2)
+    optimizer2 = optim.Adam(model2.parameters(), lr=args.lr2, weight_decay=5e-2)
+    optimizer3 = optim.Adam(model3.parameters(), lr=args.lr3, weight_decay=5e-2)
+    optimizer4 = optim.Adam(model4.parameters(), lr=args.lr4, weight_decay=5e-2)
+
+
+
     models = [model1, model2, model3, model4]
-    optimizer1 = optim.Adam(model1.parameters(), lr=args.lr1, weight_decay=1e-3)
-    optimizer2 = optim.Adam(model2.parameters(), lr=args.lr2, weight_decay=1e-3)
-    optimizer3 = optim.Adam(model3.parameters(), lr=args.lr3, weight_decay=1e-3)
-    optimizer4 = optim.Adam(model4.parameters(), lr=args.lr4, weight_decay=1e-3)
+    train_loaders = [train_loader1, train_loader2, train_loader3, train_loader4]
     optimizers = [optimizer1, optimizer2, optimizer3, optimizer4]
-
-    optimizerG1 = optim.Adam(model1.encoder.parameters(), lr=args.lr, weight_decay=1e-3)
-    optimizerG2 = optim.Adam(model2.encoder.parameters(), lr=args.lr, weight_decay=1e-3)
-    optimizerG3 = optim.Adam(model3.encoder.parameters(), lr=args.lr, weight_decay=1e-3)
-    optimizerG4 = optim.Adam(model4.encoder.parameters(), lr=args.lr, weight_decay=1e-3)
-    optimizerGs = [optimizerG1, optimizerG2, optimizerG3, optimizerG4]
+    data_inters = [iter(train_loader1),iter(train_loader2),iter(train_loader3),iter(train_loader4)]
 
 
-
-    discriminators = dict()
-    optimizerDs = dict()
-    for i in range(4):
-        discriminators[i] = Discriminator(args.dim).to(device)
-        optimizerDs[i] = optim.Adam(discriminators[i].parameters(), lr= args.lr, weight_decay=1e-3)
-
-
-    #global model
-    model = Classifier(6105,args.dim,2).to(device)
+    model = MLP(6105,args.dim,2, act=None).to(device)
     print(model)
+    nnloss = nn.NLLLoss()
 
-    # loss functions
-    celoss = nn.CrossEntropyLoss()
-    def advDloss(d1,d2):
-        res = -torch.log(d1).mean()-torch.log(1-d2).mean()
-        return res
-    def advGloss(d1,d2):
-        res = -torch.log(d1).mean()-torch.log(d2).mean()
-        return res.mean()
+    dist_loss_fn = KLDivLoss1()
 
 
-    def train(epoch):
+    def train(epoch, share_weights):
+        print(f"共享参数: {share_weights}")
         pace = args.pace
         for i in range(4):
             models[i].train()
@@ -229,21 +231,6 @@ def main(args):
             elif epoch > 50 and epoch % 20 == 0:
                 for param_group1 in optimizers[i].param_groups:
                     param_group1['lr'] = 0.5 * param_group1['lr']
-            if epoch <= 50 and epoch % 20 == 0:
-                for param_group1 in optimizerGs[i].param_groups:
-                    param_group1['lr'] = 0.5 * param_group1['lr']
-            elif epoch > 50 and epoch % 20 == 0:
-                for param_group1 in optimizerGs[i].param_groups:
-                    param_group1['lr'] = 0.5 * param_group1['lr']
-
-            discriminators[i].train()
-            if epoch <= 50 and epoch % 20 == 0:
-                for param_group1 in optimizerDs[i].param_groups:
-                    param_group1['lr'] = 0.5 * param_group1['lr']
-            elif epoch > 50 and epoch % 20 == 0:
-                for param_group1 in optimizerDs[i].param_groups:
-                    param_group1['lr'] = 0.5 * param_group1['lr']
-
 
         #define weights
         w = dict()
@@ -252,28 +239,18 @@ def main(args):
             w[i] = 0.25 #tbs[i]/denominator
 
         loss_all = dict()
-        lossD_all = dict()
-        lossG_all = dict()
         num_data = dict()
-        num_dataG = dict()
-        num_dataD = dict()
         for i in range(4):
             loss_all[i] = 0
-            num_data[i] = EPS
-            num_dataG[i] = EPS
-            lossG_all[i] = 0
-            lossD_all[i] = 0
-            num_dataD[i] = EPS
-
+            num_data[i] = 0
         count = 0
         for t in range(args.nsteps):
-            fs=[]
-
-            # optimize classifier
-
+            # 每一次循环相当于一次通信的过程
+            if not share_weights:
+                cached_models = [copy.deepcopy(models[site_i]) for site_i in range(4)]
             for i in range(4):
+
                 optimizers[i].zero_grad()
-                # a, b= next(data_iters[i])
                 try:
                     a, b = next(data_inters[i])
                 except StopIteration:
@@ -282,54 +259,31 @@ def main(args):
                 num_data[i] += b.size(0)
                 a = a.to(device)
                 b = b.to(device)
-                output = models[i](a)
-                loss = celoss(output,b)
-                loss_all[i] += loss.item() * b.size(0)
-                if epoch >=0:
-                    loss.backward(retain_graph=True)
-                    optimizers[i].step()
+                output = F.log_softmax(models[i](a))
+                # 一定要注意，model 输出的
+                loss = nnloss(output, b)
 
-                fs.append(models[i].encoder(a))  # Gs(x^s)
+                if not share_weights:
+                    # 计算对应的距离损失
+                    teacher_output = []
+                    with torch.no_grad():
+                        other_models = [cached_models[site_i] for site_i in range(4) if site_i != i]
+                        for teacher_model in other_models:
+                            teacher_model.eval()
+                            to = torch.softmax(teacher_model(a), dim=1).unsqueeze(1)
+                            teacher_output.append(to)
+                    # 接着将
+                    dist_loss = dist_loss_fn(output, teacher_output, b)
+                else:
+                    dist_loss = torch.zeros(1, device=device, requires_grad=False)
 
-            #optimize alignment
-
-            nn = []
-            noises = []
-            for i in range(4):
-                nn =tdist.Normal(torch.tensor([0.0]), 0.001 * torch.std(fs[i].detach().cpu()))
-                noises.append(nn.sample(fs[i].size()).squeeze().to(device))  # N\cdot Gt(x^t), 在下面的循环中使用 j
-
-
-            for i in range(4):
-                for j in range(4):
-                    if i!=j:
-                        # j 是目标域，i是源域
-                        optimizerDs[i].zero_grad()
-                        optimizerGs[i].zero_grad()
-                        optimizerGs[j].zero_grad()
-
-                        d1 = discriminators[i](fs[i]+noises[i])  # D_s(G_s(x^s))
-                        d2 = discriminators[i](fs[j]+noises[j])  # D_s(G_t(x^t))
-                        num_dataG[i] += d1.size(0)
-                        num_dataD[i] += d1.size(0)
-                        lossD = advDloss(d1, d2)  # LadvD
-                        lossG = advGloss(d1, d2)
-                        lossD_all[i] += lossD.item() * d1.size(0)
-                        lossG_all[i] += lossG.item() * d1.size(0)
-                        lossG_all[j] += lossG.item() * d2.size(0)
-                        lossD = 0.1*lossD
-                        if epoch >= 5:
-                            lossD.backward(retain_graph=True)
-                            optimizerDs[i].step()
-                            lossG.backward(retain_graph=True)
-                            optimizerGs[i].step()
-                            optimizerGs[j].step()
-                        writer.add_histogram('Hist/hist_'+ site[i]+'2'+site[j]+'_source', d1, epoch*args.nsteps+t)
-                        writer.add_histogram('Hist/hist_' + site[i]+'2'+site[j]+'_target', d2,
-                                             epoch * args.nsteps + t)
-
+                total_loss = dist_loss + loss
+                total_loss.backward()
+                loss_all[i] += total_loss.item() * b.size(0)
+                optimizers[i].step()
             count += 1
-            if count % pace == 0 or t == args.nsteps - 1:
+            if share_weights and (count%pace ==0 or t == args.nsteps-1):
+                # 如果允许共享原始的参数 以及满足参数通信的需求，那么同步参数
                 with torch.no_grad():
                     for key in model.state_dict().keys():
                         if models[0].state_dict()[key].dtype == torch.int64:
@@ -339,11 +293,11 @@ def main(args):
                             # add noise
                             for s in range(4):
                                 if args.type == 'G':
-                                    nn = tdist.Normal(torch.tensor([0.0]),
-                                                      args.noise * torch.std(models[s].state_dict()[key].detach().cpu()))
+                                    nn = tdist.Normal(torch.tensor([0.0]), args.noise * torch.std(
+                                        models[s].state_dict()[key].detach().cpu()))
                                 else:
-                                    nn = tdist.Laplace(torch.tensor([0.0]),
-                                                       args.noise * torch.std(models[s].state_dict()[key].detach().cpu()))
+                                    nn = tdist.Laplace(torch.tensor([0.0]), args.noise * torch.std(
+                                        models[s].state_dict()[key].detach().cpu()))
                                 noise = nn.sample(models[s].state_dict()[key].size()).squeeze()
                                 noise = noise.to(device)
                                 temp += w[s] * (models[s].state_dict()[key] + noise)
@@ -353,102 +307,87 @@ def main(args):
                             for s in range(4):
                                 models[s].state_dict()[key].data.copy_(model.state_dict()[key])
 
-        return loss_all,lossG_all,lossD_all,num_data,num_dataG,num_dataD
+        return loss_all[0] / num_data[0], loss_all[1] / num_data[1], \
+               loss_all[2] / num_data[2], loss_all[3] / num_data[3]
 
 
-    def test(federated_model,data_loader,train = False):
-        federated_model= federated_model.to(device)
+    def test(federated_model,dataloader,train=False):
         federated_model.eval()
         test_loss = 0
         correct = 0
         outputs = []
         preds = []
         targets = []
-        for data, target in data_loader:
+        for data, target in dataloader:
             targets.append(target[0].detach().numpy())
             data = data.to(device)
             target = target.to(device)
-            output = federated_model(data)
+            output = F.log_softmax(federated_model(data))
             outputs.append(output.detach().cpu().numpy())
-            test_loss += celoss(output, target).item()*target.size(0)
+            test_loss += nnloss(output, target).item()*target.size(0)
             pred = output.data.max(1)[1]
             preds.append(pred.detach().cpu().numpy())
             correct += pred.eq(target.view(-1)).sum().item()
 
-        test_loss /= len(data_loader.dataset)
-        correct /= len(data_loader.dataset)
+        test_loss /= len(dataloader.dataset)
+        correct /= len(dataloader.dataset)
         if train:
             print('Train set local: Average loss: {:.4f}, Average acc: {:.4f}'.format(test_loss, correct))
         else:
             print('Test set local: Average loss: {:.4f}, Average acc: {:.4f}'.format(test_loss, correct))
-        return test_loss, correct,  targets, outputs, preds
-
+        return test_loss, correct, targets, outputs, preds
 
     best_acc = 0
     best_epoch = 0
+    train_loss = dict()
+    for i in range(4):
+        train_loss[i] = list()
     for epoch in range(args.epochs):
         start_time = time.time()
         print(f"Epoch Number {epoch + 1}")
-        l,lG,lD,n,nG,nD = train(epoch)
-        print("===========================")
-        print("L1: {:.7f}, L2: {:.7f}, L3: {:.7f}, L4: {:.7f} ".format(l[0]/n[0],l[1]/n[1],l[2]/n[2],l[3]/n[3]))
-        print("G1: {:.7f}, G2: {:.7f}, G3: {:.7f}, G4: {:.7f} ".format(lG[0] / nG[0], lG[1] / nG[1], lG[2] / nG[2],
-                                                                       lG[3] / nG[3]))
-        print("D1: {:.7f}, D2: {:.7f}, D3: {:.7f}, D4: {:.7f} ".format(lD[0] / nD[0], lD[1] / nD[1], lD[2] / nD[2],
-                                                                       lD[3] / nD[3]))
-        writer.add_scalars('CEloss', {'l1': l[0]/n[0],'l2': l[1]/n[1],'l3': l[2]/n[2],'l4': l[3]/n[3] }, epoch)
-        writer.add_scalars('Gloss', {'gl1': lG[0] / nG[0], 'gl2': lG[1] / nG[1], 'gl3': lG[2] / nG[2], 'gl4': lG[3] / nG[3]},
-                           epoch)
-        writer.add_scalars('Dloss', {'dl1': lD[0]/ nD[0],
-                                     'dl2': lD[1]/ nD[1],
-                                     'dl3': lD[2]/ nD[2],
-                                     'dl4': lD[3]/ nD[3]},
-                           epoch)
-
-        # print('===NYU===')
-        # test(model, train_loader1, train=True)
-        # _, acc1,targets1, outputs1, preds1 = test(model, test_loader1, train=False)
-        # print('===UM===')
-        # test(model, train_loader2, train=True)
-        # _, acc2,targets2, outputs2, preds2 = test(model, test_loader2, train=False)
-        # print('===USM===')
-        # test(model, train_loader3, train=True)
-        # _, acc3,targets3, outputs3, preds3 = test(model, test_loader3, train=False)
-        # print('===UCLA===')
-        # test(model, train_loader4, train=True)
-        # _, acc4,targets4, outputs4, preds4 = test(model, test_loader4, train=False)
+        share_weight = epoch <= -1  # 前 5 个 epoch 进行参数更新
+        l1,l2,l3,l4 = train(epoch, share_weights=share_weight)
+        print(' L1 loss: {:.4f}, L2 loss: {:.4f}, L3 loss: {:.4f}, L4 loss: {:.4f}'.format(l1,l2,l3,l4))
+        train_loss[0].append(l1)
+        train_loss[1].append(l2)
+        train_loss[2].append(l3)
+        train_loss[3].append(l4)
+        test(model,train_loader,train=True)
+        test(model,train_loader,train=True)
 
         print('===NYU===')
-        loss1, acc1, targets1, outputs1, preds1 = test(model, test_loader1, train=False)
+        loss1, acc1,targets1, outputs1, preds1 = test(model, test_loader1, train=False)
         test_df = test_df.append({'rnd': epoch, 'dataset': 'NYU', 'loss': loss1, 'accuracy': acc1}, ignore_index=True)
         print('===UM===')
-        loss2, acc2, targets2, outputs2, preds2 = test(model, test_loader2, train=False)
+        loss2, acc2,targets2, outputs2, preds2 = test(model, test_loader2, train=False)
         test_df = test_df.append({'rnd': epoch, 'dataset': 'UM', 'loss': loss2, 'accuracy': acc2}, ignore_index=True)
         print('===USM===')
-        loss3, acc3, targets3, outputs3, preds3 = test(model, test_loader3, train=False)
+        loss3, acc3,targets3, outputs3, preds3 = test(model, test_loader3, train=False)
         test_df = test_df.append({'rnd': epoch, 'dataset': 'USM', 'loss': loss3, 'accuracy': acc3}, ignore_index=True)
         print('===UCLA===')
-        loss4, acc4, targets4, outputs4, preds4 = test(model, test_loader4, train=False)
+        loss4, acc4,targets4, outputs4, preds4 = test(model, test_loader4, train=False)
         test_df = test_df.append({'rnd': epoch, 'dataset': 'UCLA', 'loss': loss4, 'accuracy': acc4}, ignore_index=True)
-
         if (acc1+acc2+acc3+acc4)/4 > best_acc:
             best_acc = (acc1+acc2+acc3+acc4)/4
             best_epoch = epoch
         total_time = time.time() - start_time
         print('Communication time over the network', round(total_time, 2), 's\n')
-        test_df.to_excel(logdir + "/test_fed_align.xlsx", engine='xlsxwriter')
+        test_df.to_excel(logdir + "/test_feddist.xlsx", engine='xlsxwriter')
+
     model_wts = copy.deepcopy(model.state_dict())
     torch.save(model_wts, os.path.join(args.model_dir, str(args.split) +'.pth'))
-    print('Best Acc:',best_acc, 'Beat Epoch:', best_epoch)
-    print('split:', args.split,'   noise:', args.noise, '   pace:', args.pace)
-    dd.io.save(os.path.join(args.res_dir, 'NYU_' + str(args.split) + '.h5'),
+    dd.io.save(os.path.join(res_dir, 'NYU_' + str(args.split) + '.h5'),
                 {'outputs': outputs1, 'preds': preds1, 'targets': targets1})
-    dd.io.save(os.path.join(args.res_dir, 'UM_' + str(args.split) + '.h5'),
+    dd.io.save(os.path.join(res_dir, 'UM_' + str(args.split) + '.h5'),
                 {'outputs': outputs2, 'preds': preds2, 'targets': targets2})
-    dd.io.save(os.path.join(args.res_dir, 'USM_' + str(args.split) + '.h5'),
+    dd.io.save(os.path.join(res_dir, 'USM_' + str(args.split) + '.h5'),
                 {'outputs': outputs3, 'preds': preds3, 'targets': targets3})
-    dd.io.save(os.path.join(args.res_dir, 'UCLA_' + str(args.split) + '.h5'),
+    dd.io.save(os.path.join(res_dir, 'UCLA_' + str(args.split) + '.h5'),
                 {'outputs': outputs4, 'preds': preds4, 'targets': targets4})
+    dd.io.save(os.path.join(res_dir,'train_loss.h5'),{'loss':train_loss})
+    print('Best Acc:',best_acc)
+    print('split:', args.split,'   noise:', args.noise, '   pace:', args.pace)
+
 
 #==========================================================================
 if __name__ == '__main__':
@@ -456,18 +395,16 @@ if __name__ == '__main__':
 
     # specify for dataset site
     parser.add_argument('--split', type=int, default=0, help='select 0-4 fold')
-    # do not need to change
-    parser.add_argument('--pace', type=int, default=50, help='communication pace')
+    parser.add_argument('--pace', type=int, default=20, help='communication pace')
     parser.add_argument('--noise', type=float, default=0, help='noise level for gaussian or err level for Lap')
     parser.add_argument('--type', type=str, default='G', help='Gaussian or Lap')
+    # do not need to change
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--lr1', type=float, default=1e-4)
-    parser.add_argument('--lr2', type=float, default=1e-4)
-    parser.add_argument('--lr3', type=float, default=1e-4)
-    parser.add_argument('--lr4', type=float, default=1e-4)
-    parser.add_argument('--lamb', type=float, default=0.1, help = 'lossG weight')
+    parser.add_argument('--lr1', type=float, default=1e-5)
+    parser.add_argument('--lr2', type=float, default=1e-5)
+    parser.add_argument('--lr3', type=float, default=1e-5)
+    parser.add_argument('--lr4', type=float, default=1e-5)
     parser.add_argument('--clip', type=float, default=5.0, help='gradient clip')
     parser.add_argument('--dim', type=int, default=16,help='hidden dim of MLP')
     parser.add_argument('--nsteps', type=int, default=60, help='training steps/epoach')
@@ -476,14 +413,14 @@ if __name__ == '__main__':
     parser.add_argument('-tbs3', '--test_batch_size3', type=int, default=205, help='USM test batch size')
     parser.add_argument('-tbs4', '--test_batch_size4', type=int, default=85, help='UCLA test batch size')
     parser.add_argument('--overlap', type=bool, default=True, help='augmentation method')
-    parser.add_argument('--sepnorm', type=bool, default=False, help='normalization method')
+    parser.add_argument('--sepnorm', type=bool, default=True, help='normalization method')
     parser.add_argument('--id_dir', type=str, default='./idx')
-    parser.add_argument('--res_dir', type=str, default='./result/align_overlap')
+    parser.add_argument('--res_dir', type=str, default='./result/fed_overlap')
     parser.add_argument('--vec_dir', type=str, default='./data')
-    parser.add_argument('--model_dir', type=str, default='./model/align_overlap')
-    # fed_overlap 用来汇总一下
+    parser.add_argument('--model_dir', type=str, default='./model/fed_overlap')
     parser.add_argument('--log_dir', type=str, default='./log/fed_overlap')
-
     args = parser.parse_args()
+    for k, v in args.__dict__.items():
+        print(f"{k:7}: {v}")
     assert args.split in [0,1,2,3,4]
     main(args)

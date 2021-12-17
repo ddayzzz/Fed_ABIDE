@@ -10,6 +10,7 @@ import os
 import argparse
 import numpy as np
 import copy
+import pandas as pd
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 EPS = 1e-15
@@ -17,15 +18,19 @@ EPS = 1e-15
 def main(args):
     torch.manual_seed(args.seed)
     if not os.path.exists(args.res_dir):
-        os.mkdir(args.res_dir)
+        os.makedirs(args.res_dir, exist_ok=True)
     if not os.path.exists(os.path.join(args.res_dir,args.type+str(args.noise))):
-        os.mkdir(os.path.join(args.res_dir,args.type+str(args.noise)))
+        os.makedirs(os.path.join(args.res_dir,args.type+str(args.noise)), exist_ok=True)
     if not os.path.exists(os.path.join(args.res_dir,args.type+str(args.noise),str(args.pace))):
-        os.mkdir(os.path.join(args.res_dir,args.type+str(args.noise),str(args.pace)))
+        os.makedirs(os.path.join(args.res_dir,args.type+str(args.noise),str(args.pace)), exist_ok=True)
 
     if not os.path.exists(args.model_dir):
-        os.mkdir(args.model_dir)
+        os.makedirs(args.model_dir, exist_ok=True)
 
+    logdir = f"{args.log_dir}/split_{args.split}"
+    if not os.path.exists(logdir):
+        os.makedirs(logdir, exist_ok=True)
+    test_df = pd.DataFrame(columns=['rnd', 'dataset', 'loss', 'accuracy'])
     res_dir = os.path.join(args.res_dir,args.type+str(args.noise),str(args.pace))
 
     data1 = dd.io.load(os.path.join(args.vec_dir,'NYU_correlation_matrix.h5'))
@@ -243,21 +248,16 @@ def main(args):
                         else:
                             temp = torch.zeros_like(model.state_dict()[key])
                             # add noise
-                            if args.noise > 0:
-                                for s in range(4):
-                                    if args.type == 'G':
-                                        nn = tdist.Normal(torch.tensor([0.0]), args.noise * torch.std(
-                                            models[s].state_dict()[key].detach().cpu()))
-                                    else:
-                                        nn = tdist.Laplace(torch.tensor([0.0]), args.noise * torch.std(
-                                            models[s].state_dict()[key].detach().cpu()))
-                                    noise = nn.sample(models[s].state_dict()[key].size()).squeeze()
-                                    noise = noise.to(device)
-                                    temp += w[s] * (models[s].state_dict()[key] + noise)
-                            else:
-                                # 不使用 noise
-                                for s in range(4):
-                                    temp += w[s] * models[s].state_dict()[key]
+                            for s in range(4):
+                                if args.type == 'G':
+                                    nn = tdist.Normal(torch.tensor([0.0]), args.noise * torch.std(
+                                        models[s].state_dict()[key].detach().cpu()))
+                                else:
+                                    nn = tdist.Laplace(torch.tensor([0.0]), args.noise * torch.std(
+                                        models[s].state_dict()[key].detach().cpu()))
+                                noise = nn.sample(models[s].state_dict()[key].size()).squeeze()
+                                noise = noise.to(device)
+                                temp += w[s] * (models[s].state_dict()[key] + noise)
                             # update global model
                             model.state_dict()[key].data.copy_(temp)
                             # updata local model
@@ -312,18 +312,24 @@ def main(args):
         test(model,train_loader,train=True)
 
         print('===NYU===')
-        _, acc1,targets1, outputs1, preds1 = test(model, test_loader1, train=False)
+        loss1, acc1,targets1, outputs1, preds1 = test(model, test_loader1, train=False)
+        test_df = test_df.append({'rnd': epoch, 'dataset': 'NYU', 'loss': loss1, 'accuracy': acc1}, ignore_index=True)
         print('===UM===')
-        _, acc2,targets2, outputs2, preds2 = test(model, test_loader2, train=False)
+        loss2, acc2,targets2, outputs2, preds2 = test(model, test_loader2, train=False)
+        test_df = test_df.append({'rnd': epoch, 'dataset': 'UM', 'loss': loss2, 'accuracy': acc2}, ignore_index=True)
         print('===USM===')
-        _, acc3,targets3, outputs3, preds3 = test(model, test_loader3, train=False)
+        loss3, acc3,targets3, outputs3, preds3 = test(model, test_loader3, train=False)
+        test_df = test_df.append({'rnd': epoch, 'dataset': 'USM', 'loss': loss3, 'accuracy': acc3}, ignore_index=True)
         print('===UCLA===')
-        _, acc4,targets4, outputs4, preds4 = test(model, test_loader4, train=False)
+        loss4, acc4,targets4, outputs4, preds4 = test(model, test_loader4, train=False)
+        test_df = test_df.append({'rnd': epoch, 'dataset': 'UCLA', 'loss': loss4, 'accuracy': acc4}, ignore_index=True)
         if (acc1+acc2+acc3+acc4)/4 > best_acc:
             best_acc = (acc1+acc2+acc3+acc4)/4
             best_epoch = epoch
         total_time = time.time() - start_time
         print('Communication time over the network', round(total_time, 2), 's\n')
+        test_df.to_excel(logdir + "/test_fedavg.xlsx", engine='xlsxwriter')
+
     model_wts = copy.deepcopy(model.state_dict())
     torch.save(model_wts, os.path.join(args.model_dir, str(args.split) +'.pth'))
     dd.io.save(os.path.join(res_dir, 'NYU_' + str(args.split) + '.h5'),
@@ -368,7 +374,9 @@ if __name__ == '__main__':
     parser.add_argument('--res_dir', type=str, default='./result/fed_overlap')
     parser.add_argument('--vec_dir', type=str, default='./data')
     parser.add_argument('--model_dir', type=str, default='./model/fed_overlap')
-
+    parser.add_argument('--log_dir', type=str, default='./log/fed_overlap')
     args = parser.parse_args()
+    for k, v in args.__dict__.items():
+        print(f"{k:7}: {v}")
     assert args.split in [0,1,2,3,4]
     main(args)

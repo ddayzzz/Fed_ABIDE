@@ -6,13 +6,17 @@ import torch.distributions as tdist
 
 
 class MLP(nn.Module):
-    def __init__(self, dim_in, dim_hidden, dim_out):
+    def __init__(self, dim_in, dim_hidden, dim_out, act='log_softmax'):
         super(MLP, self).__init__()
         self.fc1 = nn.Linear(dim_in, dim_hidden)
         self.bn1 = nn.BatchNorm1d(dim_hidden)
         self.relu = nn.ReLU(dim_hidden)
         self.dropout = nn.Dropout()
         self.fc2 = nn.Linear(dim_hidden, dim_out)
+        if act == 'log_softmax':
+            self.act = nn.LogSoftmax(dim=-1)
+        else:
+            self.act = nn.Identity()
 
     def forward(self, x):
         x = self.dropout(x)
@@ -21,7 +25,7 @@ class MLP(nn.Module):
         x = self.bn1(x)
         x = self.dropout(x)
         x = self.fc2(x)
-        return F.log_softmax(x, dim=-1)
+        return self.act(x)
 
 class Encoder(nn.Module):
     def __init__(self, dim_in, dim_hidden):
